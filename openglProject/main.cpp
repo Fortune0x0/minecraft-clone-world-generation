@@ -1,4 +1,5 @@
 // MinecraftClone.cpp - Fixed version with better visuals
+// Integrated: Improved Perlin Noise (Ken Perlin, 2002) + AABB voxel collision/gravity
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <iostream>
@@ -6,9 +7,14 @@
 #include <map>
 #include <cmath>
 #include <random>
+#include <algorithm>
+#include <array>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+
+float pitchAngle = 0.0f;
+float yawAngle = -90.0f;
 
 // Block Types
 enum BlockType {
@@ -21,16 +27,21 @@ enum BlockType {
     WATER = 6,
     SAND = 7
 };
-
+int positionX = 0;
 // World Configuration
 const int CHUNK_SIZE = 16;
 const int WORLD_HEIGHT = 64;
 const int RENDER_DISTANCE = 4;
 const float BLOCK_SIZE = 1.0f;
 
+// Physics constants
+const float GRAVITY_ACCEL = -20.0f;   // blocks/s^2, downward
+const float TERMINAL_VELOCITY = -50.0f;
+const float JUMP_SPEED = 10.0f; // apex = JUMP_SPEED^2 / (2*|GRAVITY_ACCEL|) ~= 2.5 blocks
+
 // Camera/Player
 struct Camera {
-    glm::vec3 position = glm::vec3(0, 32, 0);
+    glm::vec3 position = glm::vec3(0, 40, 0); // eye position
     glm::vec3 front = glm::vec3(0, 0, -1);
     glm::vec3 up = glm::vec3(0, 1, 0);
     glm::vec3 right = glm::vec3(1, 0, 0);
@@ -38,8 +49,104 @@ struct Camera {
     float pitch = 0.0f;
     float speed = 5.0f;
     float sensitivity = 0.1f;
-    bool flying = true;
+
+    // Physics/collision state
+    bool flying = false;          // press F to toggle
+    glm::vec3 velocity = glm::vec3(0.0f);
+    bool onGround = false;
+
+    // Player collision box (Minecraft-like proportions)
+    float halfWidth = 0.3f;   // box is 0.6 wide/deep
+    float eyeHeight = 1.6f;   // eye position relative to feet
+    float playerHeight = 1.8f; // total box height, feet to top
 };
+
+// ==========================================================================
+// PERLIN NOISE (Improved Perlin Noise, Ken Perlin 2002)
+// ==========================================================================
+class PerlinNoise {
+public:
+    explicit PerlinNoise(uint32_t seed) {
+        for (int i = 0; i < 256; i++) p[i] = i;
+        std::mt19937 gen(seed);
+        std::shuffle(p.begin(), p.begin() + 256, gen);
+        for (int i = 0; i < 256; i++) p[256 + i] = p[i];
+    }
+
+    // Returns noise in roughly [-1, 1]
+    float noise2D(float x, float z) const {
+        int X = (int)std::floor(x) & 255;
+        int Z = (int)std::floor(z) & 255;
+
+        float xf = x - std::floor(x);
+        float zf = z - std::floor(z);
+
+        float u = fade(xf);
+        float v = fade(zf);
+
+        int aa = p[p[X] + Z];
+        int ab = p[p[X] + Z + 1];
+        int ba = p[p[X + 1] + Z];
+        int bb = p[p[X + 1] + Z + 1];
+
+        float x1 = lerp(grad(aa, xf, zf), grad(ba, xf - 1, zf), u);
+        float x2 = lerp(grad(ab, xf, zf - 1), grad(bb, xf - 1, zf - 1), u);
+
+        return lerp(x1, x2, v);
+    }
+
+private:
+    std::array<int, 512> p{};
+
+    static float fade(float t) {
+        return t * t * t * (t * (t * 6 - 15) + 10);
+    }
+
+    static float lerp(float a, float b, float t) {
+        return a + t * (b - a);
+    }
+
+    static float grad(int hash, float x, float z) {
+        switch (hash & 7) {
+        case 0: return  x + z;
+        case 1: return  x - z;
+        case 2: return -x + z;
+        case 3: return -x - z;
+        case 4: return  x;
+        case 5: return -x;
+        case 6: return  z;
+        default: return -z;
+        }
+    }
+};
+
+// Fractal sum (fBm)
+inline float fractalNoise2D(const PerlinNoise& pn, float x, float z,
+    int octaves = 4, float baseFrequency = 0.05f,
+    float persistence = 0.5f, float lacunarity = 2.0f) {
+    float total = 0.0f;
+    float frequency = baseFrequency;
+    float amplitude = 1.0f;
+    for (int i = 0; i < octaves; i++) {
+        total += pn.noise2D(x * frequency, z * frequency) * amplitude;
+        frequency *= lacunarity;
+        amplitude *= persistence;
+    }
+    return total;
+}
+
+PerlinNoise terrainNoise(12345);
+PerlinNoise treeNoise(54321);
+
+// Computes the same baseHeight formula used in Chunk::generateTerrain(), so we
+// can find a safe (above-ground) spot to spawn the player instead of guessing
+// a fixed y value that may or may not be above the actual generated terrain.
+int surfaceHeightAt(float worldX, float worldZ) {
+    float heightValue = fractalNoise2D(terrainNoise, worldX, worldZ);
+    int baseHeight = 25 + (int)(heightValue * 15);
+    baseHeight = std::max(5, std::min(WORLD_HEIGHT - 10, baseHeight));
+    return baseHeight;
+}
 
 // Block vertex data with normals for proper lighting
 float blockVertices[] = {
@@ -81,7 +188,6 @@ float blockVertices[] = {
       -0.5f, -0.5f,  0.5f,  0.0f, -1.0f, 0.0f,  0.0f, 1.0f
 };
 
-
 unsigned int blockIndices[] = {
     0,  1,  2,   0,  2,  3,   // front
     4,  5,  6,   4,  6,  7,   // back
@@ -91,7 +197,6 @@ unsigned int blockIndices[] = {
     20, 21, 22,  20, 22, 23   // bottom
 };
 
-// Improved shaders with proper lighting
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -131,65 +236,52 @@ uniform vec3 viewPos;
 void main() {
     vec3 baseColor;
     
-    // Minecraft-like color coding based on block type
-    if (BlockType == 1.0) {        // GRASS
-        baseColor = vec3(0.33, 0.7, 0.26);  // Rich green
-    } else if (BlockType == 2.0) { // DIRT
-        baseColor = vec3(0.55, 0.36, 0.23);  // Brown
-    } else if (BlockType == 3.0) { // STONE
-        baseColor = vec3(0.5, 0.5, 0.5);  // Gray
-    } else if (BlockType == 4.0) { // WOOD
-        baseColor = vec3(0.4, 0.27, 0.13);  // Dark brown
-    } else if (BlockType == 5.0) { // LEAVES
-        baseColor = vec3(0.13, 0.55, 0.13);  // Forest green
-    } else if (BlockType == 6.0) { // WATER
-        baseColor = vec3(0.2, 0.4, 0.8);  // Blue
-    } else if (BlockType == 7.0) { // SAND
-        baseColor = vec3(0.87, 0.78, 0.5);  // Sandy yellow
+    if (BlockType == 1.0) {
+        baseColor = vec3(0.33, 0.7, 0.26);
+    } else if (BlockType == 2.0) {
+        baseColor = vec3(0.55, 0.36, 0.23);
+    } else if (BlockType == 3.0) {
+        baseColor = vec3(0.5, 0.5, 0.5);
+    } else if (BlockType == 4.0) {
+        baseColor = vec3(0.4, 0.27, 0.13);
+    } else if (BlockType == 5.0) {
+        baseColor = vec3(0.13, 0.55, 0.13);
+    } else if (BlockType == 6.0) {
+        baseColor = vec3(0.2, 0.4, 0.8);
+    } else if (BlockType == 7.0) {
+        baseColor = vec3(0.87, 0.78, 0.5);
     } else {
-        baseColor = vec3(0.8, 0.8, 0.8);  // Default
+        baseColor = vec3(0.8, 0.8, 0.8);
     }
     
-    // Add subtle texture variation
     float pattern = sin(TexCoord.x * 32.0) * sin(TexCoord.y * 32.0) * 0.05;
     baseColor += pattern;
     
-    // Directional lighting (sun from above and slightly to the side)
     vec3 lightDir = normalize(vec3(0.3, 1.0, 0.5));
     vec3 norm = normalize(Normal);
     
-    // Diffuse lighting
     float diff = max(dot(norm, lightDir), 0.0);
-    
-    // Ambient lighting (stronger to prevent too dark areas)
     float ambient = 0.5;
     
-    // Face-based shading for Minecraft look
     float faceShading = 1.0;
     if (abs(norm.y) > 0.9) {
-        // Top/bottom faces
-        faceShading = (norm.y > 0.0) ? 1.0 : 0.5;  // Top bright, bottom dark
+        faceShading = (norm.y > 0.0) ? 1.0 : 0.5;
     } else if (abs(norm.x) > 0.9) {
-        // Left/right faces
         faceShading = 0.8;
     } else {
-        // Front/back faces
         faceShading = 0.6;
     }
     
-    // Combine lighting
     float lighting = ambient + diff * 0.5;
     lighting *= faceShading;
     
-    // Apply lighting to color
     vec3 finalColor = baseColor * lighting;
     
-    // Add slight fog for depth
     float fogStart = 40.0;
     float fogEnd = 80.0;
     float fogDistance = length(FragPos - viewPos);
     float fogFactor = clamp((fogEnd - fogDistance) / (fogEnd - fogStart), 0.0, 1.0);
-    vec3 fogColor = vec3(0.5, 0.75, 1.0); // Sky blue
+    vec3 fogColor = vec3(0.5, 0.75, 1.0);
     
     finalColor = mix(fogColor, finalColor, fogFactor);
     
@@ -197,43 +289,6 @@ void main() {
 }
 )";
 
-// Perlin noise-like function for better terrain
-float noise(int x, int z, int seed) {
-    int n = x + z * 57 + seed * 131;
-    n = (n << 13) ^ n;
-    return 1.0 - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0;
-}
-
-float smoothNoise(float x, float z, int seed) {
-    int intX = (int)x;
-    int intZ = (int)z;
-    float fracX = x - intX;
-    float fracZ = z - intZ;
-
-    float v1 = noise(intX, intZ, seed);
-    float v2 = noise(intX + 1, intZ, seed);
-    float v3 = noise(intX, intZ + 1, seed);
-    float v4 = noise(intX + 1, intZ + 1, seed);
-
-    float i1 = v1 * (1 - fracX) + v2 * fracX;
-    float i2 = v3 * (1 - fracX) + v4 * fracX;
-
-    return i1 * (1 - fracZ) + i2 * fracZ;
-}
-
-float interpolatedNoise(float x, float z, int seed) {
-    float total = 0;
-    float frequency = 0.05f;
-    float amplitude = 1.0f;
-
-    for (int i = 0; i < 4; i++) {
-        total += smoothNoise(x * frequency, z * frequency, seed + i) * amplitude;
-        frequency *= 2;
-        amplitude *= 0.5;
-    }
-
-    return total;
-}
 int counter = 0;
 
 // World/Chunk Management
@@ -258,20 +313,16 @@ public:
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
 
-                // Improved terrain generation with noise
                 int worldX = chunkX * CHUNK_SIZE + x;
                 int worldZ = chunkZ * CHUNK_SIZE + z;
 
-
-                float heightValue = interpolatedNoise(worldX, worldZ, 12345);
+                float heightValue = fractalNoise2D(terrainNoise, (float)worldX, (float)worldZ);
                 int baseHeight = 25 + (int)(heightValue * 15);
                 baseHeight = std::max(5, std::min(WORLD_HEIGHT - 10, baseHeight));
-                //std::cout << "baseHeight: " << baseHeight << "\n";
-
 
                 for (int y = 0; y < WORLD_HEIGHT; y++) {
                     if (y == 0) {
-                        blocks[x][y][z] = STONE; // Bedrock
+                        blocks[x][y][z] = STONE;
                     }
                     else if (y < baseHeight - 4) {
                         blocks[x][y][z] = STONE;
@@ -283,40 +334,34 @@ public:
                         blocks[x][y][z] = GRASS;
                     }
                     else {
-                        if (blocks[x][y][z] != LEAVES ) {
+                        if (blocks[x][y][z] != LEAVES) {
                             blocks[x][y][z] = AIR;
                         }
-                        
                     }
                 }
 
-                // Better tree generation
-                 //NOTE TO SELF: To explain what is happening here for blocks[x][baseHeight - 1][z] == GRASS, this condition is always true because in the previous for loop "for (int y = 0; y < WORLD_HEIGHT; y++) " we always use y = baseHeight - 1 for grass, and we are using the same x and z from the outer loop "for (int x = 0; x < CHUNK_SIZE; x++) {" '  for (int z = 0; z < CHUNK_SIZE; z++) {" in the previous for loop and this condition, thus since x, and z, are the same and y(baseHeight -1 ) in addition to this was used for grass, and in the if statement we use the same x and z, and same y, it always has to be true
-                //NOTE TO SELF: The reason we need this condition "x > 2 && x < CHUNK_SIZE - 3 && z > 2 && z < CHUNK_SIZE - 3" is because of   if (blocks[x + dx][leafY][z + dz] == AIR), if x was less than 2, say 1, the minimum of dx is -2, so we would be doing 1 + -2, which is -1, and we cant have negative index, and we need x and z to not be greater than CHUNK_SIZE - 3 because if it is like for example if it was 14(note CHUNK_SIZE - 3 is 16 -3 = 13), and we know the maximum number for dx and dz is 2, we would do 14 + 2 which is 16 and note the blocks array is   BlockType blocks[CHUNK_SIZE][WORLD_HEIGHT][CHUNK_SIZE];, so we could be doing something like blocks[16][leafY][16] but we cannot access index 16 since the size is 16(valid indices includes 0 - 15), but we don't need to make thisi condition strict because    x >= 2 && x <= CHUNK_SIZE - 3 && z >= 2 && z <= CHUNK_SIZE - 3 also works if x and z are 2 we get 0 with like dx+ x, and 13 or CHUNK_SIZE -3 + dx maximum which is 2, is 15 which is valid
-               // Better tree generation
                 if (blocks[x][baseHeight - 1][z] == GRASS &&
                     x > 2 && x < CHUNK_SIZE - 3 && z > 2 && z < CHUNK_SIZE - 3) {
 
-                    // Use noise for tree placement
-                    float treeNoise = noise(worldX, worldZ, 54321);
-                    if (treeNoise > 0.85) {
+                    // NOTE: scaled by 0.1 so we sample *between* lattice points -
+                    // gradient noise is exactly 0 at integer coordinates by construction,
+                    // so calling noise2D(worldX, worldZ) directly always returned 0
+                    // (this was silently preventing every tree from spawning).
+                    float treeValue = treeNoise.noise2D((float)worldX * 0.1f, (float)worldZ * 0.1f);
+                    if (treeValue > 0.3f) {
                         int treeHeight = 4 + (gen() % 2);
 
-                        // IMPROVED: Check for nearby trees in a larger radius
                         bool shouldPlaceTree = true;
-                        int checkRadius = 6; // Increased from 5
+                        int checkRadius = 6;
 
                         for (int checkX = x - checkRadius; checkX <= x + checkRadius; ++checkX) {
                             if (!shouldPlaceTree) break;
                             for (int checkZ = z - checkRadius; checkZ <= z + checkRadius; ++checkZ) {
-                                // Skip the center position
                                 if (checkX == x && checkZ == z) continue;
 
-                                // Check if within chunk bounds
                                 if (checkX >= 0 && checkX < CHUNK_SIZE &&
                                     checkZ >= 0 && checkZ < CHUNK_SIZE) {
 
-                                    // Check for wood blocks at multiple heights (tree trunks)
                                     for (int checkY = baseHeight; checkY < baseHeight + treeHeight + 2; ++checkY) {
                                         if (checkY < WORLD_HEIGHT && blocks[checkX][checkY][checkZ] == WOOD) {
                                             shouldPlaceTree = false;
@@ -328,26 +373,22 @@ public:
                         }
 
                         if (shouldPlaceTree) {
-                            // Place tree trunk
                             for (int y = baseHeight; y < baseHeight + treeHeight; y++) {
                                 if (y < WORLD_HEIGHT) blocks[x][y][z] = WOOD;
                             }
 
-                            // IMPROVED: Better leaf placement with fixed size
-                            // Create a more compact, spherical leaf structure
                             for (int dy = baseHeight + treeHeight - 2; dy <= baseHeight + treeHeight + 1; ++dy) {
                                 if (dy >= WORLD_HEIGHT) break;
 
-                                // Determine leaf radius for this layer
                                 int radius;
                                 if (dy == baseHeight + treeHeight + 1) {
-                                    radius = 0; // Top single block
+                                    radius = 0;
                                 }
                                 else if (dy == baseHeight + treeHeight) {
-                                    radius = 1; // Near top
+                                    radius = 1;
                                 }
                                 else {
-                                    radius = 2; // Lower layers
+                                    radius = 2;
                                 }
 
                                 for (int dx = -radius; dx <= radius; ++dx) {
@@ -355,16 +396,13 @@ public:
                                         int leafX = x + dx;
                                         int leafZ = z + dz;
 
-                                        // Skip the trunk column for lower leaves
                                         if (dx == 0 && dz == 0 && dy < baseHeight + treeHeight) {
                                             continue;
                                         }
 
-                                        // Check bounds
                                         if (leafX >= 0 && leafX < CHUNK_SIZE &&
                                             leafZ >= 0 && leafZ < CHUNK_SIZE) {
 
-                                            // Optional: Create more natural rounded shape
                                             int distSq = dx * dx + dz * dz;
                                             if (distSq <= radius * radius) {
                                                 blocks[leafX][dy][leafZ] = LEAVES;
@@ -378,26 +416,6 @@ public:
                 }
             }
         }
-
-        //for (int y = 0; y < WORLD_HEIGHT; ++y) {
-        //    std::string blockType;
-        //    if (blocks[0][y][0] == STONE) {
-        //        blockType = "STONE";
-        //    }
-        //    if (blocks[0][y][0] == DIRT) {
-        //        blockType = "DIRT";
-        //    }
-        //    if (blocks[0][y][0] == GRASS) {
-        //        blockType = "GRASS";
-        //    }
-        //    if (blocks[0][y][0] == WOOD) {
-        //        blockType = "WOOD";
-        //    }
-        //    if (blocks[0][y][0] == AIR) {
-        //        blockType = "AIR";
-        //    }
-        //    std::cout << "(" << 0 << ", " << y << ", " << 0 << ")   BLOCK: " << blockType << "\n";
-        //}
     }
     void setupMesh() {
         glGenVertexArrays(1, &VAO);
@@ -426,45 +444,31 @@ public:
                     glm::vec3 pos(chunkX * CHUNK_SIZE + x, y, chunkZ * CHUNK_SIZE + z);
                     BlockType currentBlock = blocks[x][y][z];
 
-                    // Check each face for visibility
-                    //CONFUSION HERE: WE ARE NEGATING EACH VALUE IN ARRAY WITH " ! " 
-                    //NOTE TO SELF: if we only have one iteration in generateTerrain function   for (int x = 0; x < 1; x++) {   for (int y = 0; y < 1; y++) { other unassigned indices of     BlockType blocks[CHUNK_SIZE][WORLD_HEIGHT][CHUNK_SIZE]; is 0 or AIR but can check to make sure, so at (0, 0, 0), faces checks like (0, + 1, 0) would be those unassigned indices which are AIR and if we check return blocks[x][y][z] != AIR; in the function we get false and we negate false in the array "bool faces[6] " for it to be true to render the face
-                    //NOTE TO SELF: RENDERS EXTERIOR OF CUBE NOT FACES INSIDE CHUNK, VIEW RENDERING_FACE image saved on pc for reference
                     bool faces[6] = {
-
-
-
-                        !isBlockSolid(x, y, z + 1), // front
-                        !isBlockSolid(x, y, z - 1), // Back
-                        !isBlockSolid(x - 1, y, z), // left
-                        !isBlockSolid(x + 1, y, z), // right
-                        !isBlockSolid(x, y + 1, z), // top
-                        !isBlockSolid(x, y - 1, z)  // bottom
+                        !isBlockSolid(x, y, z + 1),
+                        !isBlockSolid(x, y, z - 1),
+                        !isBlockSolid(x - 1, y, z),
+                        !isBlockSolid(x + 1, y, z),
+                        !isBlockSolid(x, y + 1, z),
+                        !isBlockSolid(x, y - 1, z)
                     };
 
                     for (int face = 0; face < 6; face++) {
-                        //if (face == 4) std::cout << "top face rendered: " << faces[face]  << ",     x: " << x << ", y: " << y << ", z: " << z << "\n";
                         if (!faces[face]) continue;
-                        //TO UNDERSTAND: vertices.push_back(blockVertices[vertexIndex * 8 + 0] + pos.x );vertices.push_back(blockVertices[vertexIndex * 8 + 1] + pos.y); vertices.push_back(blockVertices[vertexIndex * 8 + 2] + pos.z);  it is just a little bit of math involved. So, say we focus on just one vertex like (0.5, 0.5, 0.5) we know that the next block should be 1 units away, so we shift all the vertices that make the cube one units in any direction we want,  but lets just focus on one vertex for simplicity. So, if we use the for loop "  for (int x = 0; x < CHUNK_SIZE; x++) {    for (int y = 0; y < WORLD_HEIGHT; y++) {or (int z = 0; z < CHUNK_SIZE; z++) {" for the placements, and do +x for x vertex, + y for y vertex, and +z for z vertex, it would correctly place the blocks around the world, but the problem is this is for one function call, but say we call the same function again, we would still be doing + x, +y, and +z (the same increments) for the vertices so it is like we are spreading the blocks on the same small area each time, but we want to make sure for each function call we are spreading the blocks in different locations not in the previous one. So, say we used +x, + y, +z for the first call, the max spread should be 0.5 + 15 for x, and 0.5 + 63 for y and 0.5 + 15 for z, because of the foroop for x, y, and z for (int x = 0; x < CHUNK_SIZE; x++) {for (int y = 0; y < WORLD_HEIGHT; y++) {  for (int z = 0; z < CHUNK_SIZE; z++) {, and again if we call again we would spreading in the same location till e 0.5 + 15 for x, and 0.5 + 63 for y and 0.5 + 15 for z, , but in this second function call we need to start at 0.5 + 16 for x, and honesty 0.5 + y is perfectly fine(our spread is most focused on the x and z axis), and z should start at 0.5 + 16 and since we have a total of 16 iterations for x, and z, we should be at 0.5 + 31  for x and 0.5 + 31 for z, and again if we call the function the third time, we should start at incrment 32 to 47 and if we keep doing this we will notice a pattern, so 0.5 + 0 - 15, 0.5 + 16 -32, ... we can use CHUNK_SIZE to help us place the new correct position and this is because first 0-15, 16 -31, ... all iterations uses the next 16 position so if we start first and say chunkX is 0 we do 0 * 16 + x for x position, 0 * 16 + z for z position and that would perfectly give us 0-15, and again for second iteration we do 1 * 16 + x for x position, 1 * 16 + z for z that gives us 16 -31 perfectly, so we dont have to dont have to use the magic number 16 which is just CHUNK_SIZE, so replace 16 with CHUNK_SIZE and for 0, 1, 2... that can be ChunkX and ChunkZ, and there are incremented for each call which is what " for (int x = playerChunkX - RENDER_DISTANCE; x <= playerChunkX + RENDER_DISTANCE; x++) {for (int z = playerChunkZ - RENDER_DISTANCE; z <= playerChunkZ + RENDER_DISTANCE; z++) {  Chunk* chunk = getChunk(x, z);chunk->render(); 
-                        // Add vertices for this face (position, normal, texcoord, blocktype)
+
                         for (int i = 0; i < 4; i++) {
                             int vertexIndex = face * 4 + i;
-                            // Position
                             vertices.push_back(blockVertices[vertexIndex * 8 + 0] + pos.x);
                             vertices.push_back(blockVertices[vertexIndex * 8 + 1] + pos.y);
                             vertices.push_back(blockVertices[vertexIndex * 8 + 2] + pos.z);
-                            // Normal
                             vertices.push_back(blockVertices[vertexIndex * 8 + 3]);
                             vertices.push_back(blockVertices[vertexIndex * 8 + 4]);
                             vertices.push_back(blockVertices[vertexIndex * 8 + 5]);
-                            // TexCoord
                             vertices.push_back(blockVertices[vertexIndex * 8 + 6]);
                             vertices.push_back(blockVertices[vertexIndex * 8 + 7]);
-                            // Block type
                             vertices.push_back((float)currentBlock);
                         }
 
-                        // Add indices
                         unsigned int faceIndices[] = { 0, 1, 2, 0, 2, 3 };
                         for (int i = 0; i < 6; i++) {
                             indices.push_back(indexOffset + faceIndices[i]);
@@ -475,7 +479,6 @@ public:
             }
         }
 
-        // Upload to GPU
         glBindVertexArray(VAO);
 
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
@@ -484,19 +487,15 @@ public:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
 
-        // Position attribute
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
 
-        // Normal attribute
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
 
-        // Texture coordinate attribute
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(6 * sizeof(float)));
         glEnableVertexAttribArray(2);
 
-        // Block type attribute
         glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(8 * sizeof(float)));
         glEnableVertexAttribArray(3);
 
@@ -562,7 +561,6 @@ public:
         chunk->blocks[localX][y][localZ] = block;
         chunk->needsUpdate = true;
 
-        // Update neighboring chunks if on edge
         if (localX == 0) getChunk(chunkX - 1, chunkZ)->needsUpdate = true;
         if (localX == CHUNK_SIZE - 1) getChunk(chunkX + 1, chunkZ)->needsUpdate = true;
         if (localZ == 0) getChunk(chunkX, chunkZ - 1)->needsUpdate = true;
@@ -570,21 +568,16 @@ public:
     }
 
     void renderAroundPlayer(glm::vec3 playerPos) {
+        positionX = playerPos.x;
         int playerChunkX = (int)floor(playerPos.x / CHUNK_SIZE);
         int playerChunkZ = (int)floor(playerPos.z / CHUNK_SIZE);
 
-        /* std::cout << "playerPos.x: " << playerPos.x << "\n";
-         std::cout << "playerChunkX: " << playerChunkX << "\n";*/
-         /* std::cout << "playerPos.x: " << playerPos.x << ", playerPos.z: " << playerPos.z << '\n';
-          std::cout << "playerChunkX: " << playerChunkX << ", playerChunkZ: " << playerChunkZ << '\n';*/
-        \
-            for (int x = playerChunkX - RENDER_DISTANCE; x <= playerChunkX + RENDER_DISTANCE; x++) {
-                for (int z = playerChunkZ - RENDER_DISTANCE; z <= playerChunkZ + RENDER_DISTANCE; z++) {
-                    // std::cout << "x: " << x << "\n";
-                    Chunk* chunk = getChunk(x, z);
-                    chunk->render();
-                }
+        for (int x = playerChunkX - RENDER_DISTANCE; x <= playerChunkX + RENDER_DISTANCE; x++) {
+            for (int z = playerChunkZ - RENDER_DISTANCE; z <= playerChunkZ + RENDER_DISTANCE; z++) {
+                Chunk* chunk = getChunk(x, z);
+                chunk->render();
             }
+        }
     }
 
     ~World() {
@@ -652,7 +645,6 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mode
         else if (action == GLFW_RELEASE) keys[key] = false;
     }
 
-    // Block selection
     if (action == GLFW_PRESS) {
         if (key == GLFW_KEY_1) selectedBlock = GRASS;
         if (key == GLFW_KEY_2) selectedBlock = DIRT;
@@ -661,6 +653,12 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mode
         if (key == GLFW_KEY_5) selectedBlock = LEAVES;
         if (key == GLFW_KEY_6) selectedBlock = WATER;
         if (key == GLFW_KEY_7) selectedBlock = SAND;
+
+        // Toggle flying / walking
+        if (key == GLFW_KEY_F) {
+            camera.flying = !camera.flying;
+            camera.velocity = glm::vec3(0.0f);
+        }
     }
 }
 
@@ -694,6 +692,39 @@ void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
     camera.up = glm::normalize(glm::cross(camera.right, camera.front));
 }
 
+// Forward declaration - full definition (with the collision-box math) is below.
+bool aabbCollidesAt(const glm::vec3& eyePos);
+
+// Checks whether a 1x1x1 block at integer coords (bx,by,bz) would overlap the
+// player's own collision box. Used to stop placement from embedding you in
+// a solid block (e.g. placing directly under your own feet).
+bool wouldOverlapPlayer(int bx, int by, int bz) {
+    float feetY = camera.position.y - camera.eyeHeight;
+    float minX = camera.position.x - camera.halfWidth;
+    float maxX = camera.position.x + camera.halfWidth;
+    float minY = feetY;
+    float maxY = feetY + camera.playerHeight;
+    float minZ = camera.position.z - camera.halfWidth;
+    float maxZ = camera.position.z + camera.halfWidth;
+
+    bool overlapX = ((float)bx < maxX) && ((float)(bx + 1) > minX);
+    bool overlapY = ((float)by < maxY) && ((float)(by + 1) > minY);
+    bool overlapZ = ((float)bz < maxZ) && ((float)(bz + 1) > minZ);
+    return overlapX && overlapY && overlapZ;
+}
+
+// Safety net: if the player is ever found already overlapping solid geometry
+// (from a placed block, an edge case in generation, etc.), nudge upward until
+// clear. moveAndCollide alone has no way to recover from an already-embedded
+// starting position - it only rejects moving further INTO something.
+void resolveEmbeddedState() {
+    int guard = 0;
+    while (aabbCollidesAt(camera.position) && guard < 100) {
+        camera.position.y += 0.05f;
+        guard++;
+    }
+}
+
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
     if (action == GLFW_PRESS) {
         glm::vec3 ray = camera.front;
@@ -714,7 +745,7 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
                     int px = (int)floor(placePos.x);
                     int py = (int)floor(placePos.y);
                     int pz = (int)floor(placePos.z);
-                    if (world.getBlock(px, py, pz) == AIR) {
+                    if (world.getBlock(px, py, pz) == AIR && !wouldOverlapPlayer(px, py, pz)) {
                         world.setBlock(px, py, pz, selectedBlock);
                     }
                 }
@@ -724,22 +755,137 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
     }
 }
 
-void processInput(GLFWwindow* window, float deltaTime) {
-    float velocity = camera.speed * deltaTime;
+// ==========================================================================
+// COLLISION
+//
+// The player is treated as an axis-aligned box (AABB): 0.6 wide/deep,
+// 1.8 tall, anchored so `eyePos` sits `eyeHeight` above the box's feet.
+// aabbCollidesAt() tests whether that box (placed at a candidate eye
+// position) overlaps any solid block in the world.
+// ==========================================================================
+bool aabbCollidesAt(const glm::vec3& eyePos) {
+    float feetY = eyePos.y - camera.eyeHeight;
 
-    if (keys[GLFW_KEY_W]) camera.position += camera.front * velocity;
-    if (keys[GLFW_KEY_S]) camera.position -= camera.front * velocity;
-    if (keys[GLFW_KEY_A]) camera.position -= camera.right * velocity;
-    if (keys[GLFW_KEY_D]) camera.position += camera.right * velocity;
-    if (keys[GLFW_KEY_SPACE]) camera.position += camera.up * velocity;
-    if (keys[GLFW_KEY_LEFT_SHIFT]) camera.position -= camera.up * velocity;
+    float minX = eyePos.x - camera.halfWidth;
+    float maxX = eyePos.x + camera.halfWidth;
+    float minY = feetY;
+    float maxY = feetY + camera.playerHeight;
+    float minZ = eyePos.z - camera.halfWidth;
+    float maxZ = eyePos.z + camera.halfWidth;
+
+    // Shrink the test bounds slightly inward so floating-point error right at
+    // a block boundary doesn't register a false collision with the block
+    // you're standing flush against.
+    const float epsilon = 0.001f;
+    int x0 = (int)std::floor(minX + epsilon), x1 = (int)std::floor(maxX - epsilon);
+    int y0 = (int)std::floor(minY + epsilon), y1 = (int)std::floor(maxY - epsilon);
+    int z0 = (int)std::floor(minZ + epsilon), z1 = (int)std::floor(maxZ - epsilon);
+
+    for (int bx = x0; bx <= x1; bx++) {
+        for (int by = y0; by <= y1; by++) {
+            for (int bz = z0; bz <= z1; bz++) {
+                if (world.getBlock(bx, by, bz) != AIR) return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Move by `delta`, resolving collisions one axis at a time so the player
+// slides along walls/floors instead of getting stuck. Updates camera.position,
+// camera.velocity (zeroing components that hit something), and camera.onGround.
+void moveAndCollide(const glm::vec3& delta) {
+    glm::vec3 pos = camera.position;
+
+    // X axis
+    pos.x += delta.x;
+    if (aabbCollidesAt(pos)) {
+        pos.x = camera.position.x;
+        camera.velocity.x = 0.0f;
+    }
+
+    // Z axis
+    pos.z += delta.z;
+    if (aabbCollidesAt(pos)) {
+        pos.z = camera.position.z;
+        camera.velocity.z = 0.0f;
+    }
+
+    // Y axis (checked last; this is what sets onGround)
+    pos.y += delta.y;
+    if (aabbCollidesAt(pos)) {
+        if (delta.y < 0.0f) camera.onGround = true; // landed on something below
+        pos.y = camera.position.y;
+        camera.velocity.y = 0.0f;
+    }
+
+    camera.position = pos;
+}
+
+void processInput(GLFWwindow* window, float deltaTime) {
+    // Safety net: recover if somehow already overlapping solid geometry
+    // (e.g. a block just got placed under our own feet).
+    resolveEmbeddedState();
+
+    // Horizontal input direction, projected onto the XZ plane (so looking
+    // up/down doesn't speed up or slow down walking).
+    glm::vec3 flatFront = camera.front;
+    flatFront.y = 0.0f;
+    if (glm::length(flatFront) > 0.0001f) flatFront = glm::normalize(flatFront);
+
+    glm::vec3 flatRight = camera.right;
+    flatRight.y = 0.0f;
+    if (glm::length(flatRight) > 0.0001f) flatRight = glm::normalize(flatRight);
+
+    glm::vec3 horizontalMove(0.0f);
+    if (keys[GLFW_KEY_W]) horizontalMove += flatFront;
+    if (keys[GLFW_KEY_S]) horizontalMove -= flatFront;
+    if (keys[GLFW_KEY_A]) horizontalMove -= flatRight;
+    if (keys[GLFW_KEY_D]) horizontalMove += flatRight;
+    if (glm::length(horizontalMove) > 0.0001f) horizontalMove = glm::normalize(horizontalMove);
+
+    if (camera.flying) {
+        // Original no-collision flight behavior
+        float velocity = camera.speed * deltaTime;
+        camera.position += horizontalMove * velocity;
+        if (keys[GLFW_KEY_SPACE]) camera.position += glm::vec3(0, 1, 0) * velocity;
+        if (keys[GLFW_KEY_LEFT_SHIFT]) camera.position -= glm::vec3(0, 1, 0) * velocity;
+    }
+    else {
+        // Walking mode: gravity + jump + collision
+        camera.velocity.x = horizontalMove.x * camera.speed;
+        camera.velocity.z = horizontalMove.z * camera.speed;
+
+        camera.velocity.y += GRAVITY_ACCEL * deltaTime;
+        if (camera.velocity.y < TERMINAL_VELOCITY) camera.velocity.y = TERMINAL_VELOCITY;
+
+        if (keys[GLFW_KEY_SPACE] && camera.onGround) {
+            camera.velocity.y = JUMP_SPEED;
+            camera.onGround = false;
+        }
+
+        camera.onGround = false; // moveAndCollide sets this back to true if we land
+        glm::vec3 delta = camera.velocity * deltaTime;
+
+        // Substep the movement so a single large displacement (e.g. after a
+        // frame hitch, or falling at high speed) can't skip clean over a
+        // thin wall or floor between the old and new position - discrete
+        // "test only the final position" collision would otherwise tunnel.
+        const float maxStepDistance = 0.2f; // well under one block width
+        float travelDistance = glm::length(delta);
+        int numSteps = std::max(1, (int)std::ceil(travelDistance / maxStepDistance));
+        glm::vec3 stepDelta = delta / (float)numSteps;
+
+        for (int i = 0; i < numSteps; i++) {
+            moveAndCollide(stepDelta);
+        }
+    }
 }
 
 // Main function
 int main() {
 
     std::cout << "\n";
-    // Initialize GLFW
     if (!glfwInit()) {
         std::cout << "Failed to initialize GLFW" << std::endl;
         return -1;
@@ -749,7 +895,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(1200, 800, "Minecraft Clone - Enhanced", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(1200, 2000, "Minecraft Clone - Enhanced", NULL, NULL);
     if (!window) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -762,48 +908,42 @@ int main() {
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-    // Initialize GLEW
     if (glewInit() != GLEW_OK) {
         std::cout << "Failed to initialize GLEW" << std::endl;
         return -1;
     }
 
-    // OpenGL settings
     glEnable(GL_DEPTH_TEST);
-    /* glEnable(GL_CULL_FACE);
-     glCullFace(GL_BACK);*/
 
-     // Create shader program
     unsigned int shaderProgram = createShaderProgram();
 
-    // Game loop timing
+    // Spawn above the actual generated terrain surface at (0,0), rather than
+    // a fixed y value that could land inside solid ground depending on what
+    // the noise happens to produce there (baseHeight can range 5-54).
+    int spawnSurfaceHeight = surfaceHeightAt(0.5f, 0.5f);
+    camera.position = glm::vec3(0.5f, (float)spawnSurfaceHeight + 5.0f, 0.5f);
+
     float deltaTime = 0.0f;
     float lastFrame = 0.0f;
 
-    int counter = 0;
-    // Generate initial chunks around spawn
-    for (int x = -2; x <= 2; x++) {
-        for (int z = -2; z <= 2; z++) {
-            //world.getChunk(x, z)->render();
-        }
-    }
-    std::cout << "Counter: " << counter << "\n";
-
-    std::cout << "=== MINECRAFT CLONE - ENHANCED ===" << std::endl;
+    std::cout << "=== MINECRAFT CLONE - ENHANCED (Perlin noise + collision) ===" << std::endl;
     std::cout << "WASD: Move" << std::endl;
     std::cout << "Mouse: Look around" << std::endl;
-    std::cout << "Space: Fly up" << std::endl;
-    std::cout << "Shift: Fly down" << std::endl;
+    std::cout << "Space: Jump (walking) / Fly up (flying)" << std::endl;
+    std::cout << "Shift: Fly down (flying mode only)" << std::endl;
+    std::cout << "F: Toggle flying / walking" << std::endl;
     std::cout << "Left Click: Break block" << std::endl;
     std::cout << "Right Click: Place block" << std::endl;
     std::cout << "1-7: Select block type" << std::endl;
     std::cout << "ESC: Exit" << std::endl;
 
-    // Main render loop
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
+        // Clamp deltaTime so a debugger pause / hitch doesn't cause the
+        // player to tunnel through the floor in one giant physics step.
+        if (deltaTime > 0.1f) deltaTime = 0.1f;
 
         processInput(window, deltaTime);
 
@@ -812,8 +952,7 @@ int main() {
 
         glUseProgram(shaderProgram);
 
-        // Set up matrices
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f), 1200.0f / 800.0f, 0.1f, 100.0f);
+        glm::mat4 projection = glm::perspective(glm::radians(100.0f), 1200.0f / 800.0f, 0.1f, 100.0f);
         glm::mat4 view = glm::lookAt(camera.position, camera.position + camera.front, camera.up);
         glm::mat4 model = glm::mat4(1.0f);
 
@@ -822,14 +961,12 @@ int main() {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
         glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, glm::value_ptr(camera.position));
 
-        // Render world
         world.renderAroundPlayer(camera.position);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // Cleanup
     glDeleteProgram(shaderProgram);
     glfwTerminate();
     return 0;
