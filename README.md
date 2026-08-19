@@ -119,6 +119,8 @@ These vectors are then used to construct the view matrix and control movement th
 
 ### Controls
 
+#### Movement
+
 | Key / Input | Action |
 | --- | --- |
 | W | Move forward |
@@ -128,8 +130,31 @@ These vectors are then used to construct the view matrix and control movement th
 | Space | Move up |
 | Left Shift | Move down |
 | Mouse | Look around |
+
+#### Block Interaction
+
+| Key / Input | Action |
+| --- | --- |
 | Left Mouse Button | Remove block |
-| Right Mouse Button | Place block |
+| Right Mouse Button | Place selected block |
+
+#### Block Selection
+
+| Key | Block |
+| --- | --- |
+| 1 | Stone |
+| 2 | Wood |
+| 3 | Grass |
+| 4 | Dirt |
+| 5 | Leaves |
+| 6 | Water |
+| 7 | Sand |
+
+#### Other
+
+| Key | Action |
+| --- | --- |
+| Escape | Close the game |
 
 ---
 
