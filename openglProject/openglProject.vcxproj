@@ -129,15 +129,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="practice.cpp" />
-    <ClCompile Include="stb_image.cpp" />
+    <ClCompile Include="gamemath.hpp" />
+    <ClCompile Include="Minecraft.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="BASIC.SHADER" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="stb_image.h" />
+    <None Include="minecraft.shader" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
