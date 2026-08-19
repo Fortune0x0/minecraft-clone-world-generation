@@ -10,19 +10,25 @@ The project is built using OpenGL with GLFW and GLEW and is currently developed 
 
 ## Screenshots
 
-### Procedurally Generated World
+### World Overview
 
-![Procedurally generated voxel world](images/world.png)
+![Procedurally generated voxel world](images/world-overview.png)
 
-### Terrain and Trees
+### Procedural Terrain
 
-![Terrain and trees](images/terrain-trees.png)
+![Procedurally generated terrain](images/terrain-generation.png)
 
-### Fog / View Distance
+### Procedurally Generated Trees
 
-![Distance fog](images/fog.png)
+![Procedurally generated trees](images/trees.png)
 
-<!-- Add additional screenshots as more features are implemented. -->
+### Distance Fog
+
+![Distance-based fog](images/fog.png)
+
+### Block Lighting
+
+![Block face and directional lighting](images/block-lighting.png)
 
 ---
 
@@ -118,6 +124,8 @@ These vectors are then used to construct the view matrix and control movement th
 | S | Move backward |
 | A | Move left |
 | D | Move right |
+| Space | Move up |
+| Left Shift | Move down |
 | Mouse | Look around |
 
 <!-- Add additional controls here if needed. -->
@@ -162,8 +170,7 @@ To build the project you will need:
 
 The libraries must be correctly included and linked with the Visual Studio project before compiling.
 
-I recommend following the setup video below if you are unfamiliar with configuring GLFW, GLEW, and OpenGL in Visual Studio. The video also includes a setup for glm, which is not required for running the game because the project already has its own small game library
-
+I recommend following the setup video below if you are unfamiliar with configuring GLFW, GLEW, and OpenGL in Visual Studio. The video also includes setup for GLM, which is not required for running this project because the project includes its own custom math library.
 ### Setup Tutorial
 
 [![OpenGL Setup Tutorial](images/setup-tutorial.png)](https://www.youtube.com/watch?v=i2-ASsa8wgo&t=746s)
@@ -186,6 +193,14 @@ Build and run the project using the **x64** configuration.
 
 ```text
 minecraft-clone-world-generation/
+│
+├── images/
+│   ├── world-overview.png
+│   ├── terrain-generation.png
+│   ├── trees.png
+│   ├── fog.png
+│   ├── block-lighting.png
+│   └── setup-tutorial.png
 │
 ├── openglProject/
 │   ├── Minecraft.cpp
