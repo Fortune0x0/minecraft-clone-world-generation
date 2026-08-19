@@ -173,7 +173,7 @@ The libraries must be correctly included and linked with the Visual Studio proje
 I recommend following the setup video below if you are unfamiliar with configuring GLFW, GLEW, and OpenGL in Visual Studio. The video also includes setup for GLM, which is not required for running this project because the project includes its own custom math library.
 ### Setup Tutorial
 
-[![OpenGL Setup Tutorial](images/setup-tutorial.png)](https://www.youtube.com/watch?v=i2-ASsa8wgo&t=746s)
+[![OpenGL Setup Tutorial](images/setup-tutorial.png)](https://www.youtube.com/watch?v=i2-ASsa8wgo&t)
 
 The tutorial covers configuring the required include directories, library directories, and linker dependencies.
 
