@@ -2,7 +2,7 @@
 
 A Minecraft-inspired voxel world renderer built from scratch in **C++ using OpenGL**.
 
-This project is focused on learning and implementing the mathematics and graphics programming techniques behind a 3D voxel game. It includes procedural terrain generation, chunk-based world generation, custom camera mathematics, block types, trees, lighting, fog, collision detection, and a custom math library.
+This project is focused on learning and implementing the mathematics and graphics programming techniques behind a 3D voxel game. It includes procedural terrain generation, chunk-based world generation, custom camera mathematics, block types, trees, lighting, fog, collision detection, block interaction, and a custom math library.
 
 The project is built using OpenGL with GLFW and GLEW and is currently developed using Visual Studio on Windows.
 
@@ -36,6 +36,7 @@ The project is built using OpenGL with GLFW and GLEW and is currently developed 
 
 - Procedurally generated voxel terrain
 - Chunk-based world generation
+- Interactive block placement and destruction
 - Multiple block types
   - Stone
   - Wood
@@ -76,7 +77,7 @@ A small custom mathematics library is included in the project for the vector and
 
 The terrain is procedurally generated using a deterministic noise function.
 
-Noise values are sampled at lattice points and smoothly combined using bilinear interpolation. The resulting values are used to determine terrain heights throughout the world.
+Noise values are sampled at lattice points and combined using bilinear interpolation. The resulting values are used to determine terrain heights throughout the world.
 
 The world is divided into chunks so that terrain can be organized and generated in sections.
 
@@ -118,7 +119,7 @@ These vectors are then used to construct the view matrix and control movement th
 
 ### Controls
 
-| Key | Action |
+| Key / Input | Action |
 | --- | --- |
 | W | Move forward |
 | S | Move backward |
@@ -127,8 +128,8 @@ These vectors are then used to construct the view matrix and control movement th
 | Space | Move up |
 | Left Shift | Move down |
 | Mouse | Look around |
-
-<!-- Add additional controls here if needed. -->
+| Left Mouse Button | Remove block |
+| Right Mouse Button | Place block |
 
 ---
 
@@ -171,9 +172,10 @@ To build the project you will need:
 The libraries must be correctly included and linked with the Visual Studio project before compiling.
 
 I recommend following the setup video below if you are unfamiliar with configuring GLFW, GLEW, and OpenGL in Visual Studio. The video also includes setup for GLM, which is not required for running this project because the project includes its own custom math library.
+
 ### Setup Tutorial
 
-[![OpenGL Setup Tutorial](images/setup-tutorial.png)](https://www.youtube.com/watch?v=i2-ASsa8wgo&t)
+[![OpenGL Setup Tutorial](images/setup-tutorial.png)](https://www.youtube.com/watch?v=i2-ASsa8wgo)
 
 The tutorial covers configuring the required include directories, library directories, and linker dependencies.
 
@@ -221,7 +223,7 @@ minecraft-clone-world-generation/
 
 **`Minecraft.cpp`**
 
-Contains the main game and rendering logic, including world generation, terrain generation, camera movement, chunk handling, and rendering.
+Contains the main game and rendering logic, including world generation, terrain generation, camera movement, chunk handling, block interaction, and rendering.
 
 **`gamemath.hpp`**
 
@@ -266,7 +268,6 @@ Current work is focused on expanding the world generation and adding additional 
 
 Possible future additions include:
 
-- Block placement and destruction
 - Improved terrain generation
 - Additional biomes
 - Additional block types
